@@ -64,3 +64,6 @@ htmlcov/
 *.lz
 *.lzo
 ```
+# foundry build artifacts
+packages/contracts/out/
+packages/contracts/cache/
