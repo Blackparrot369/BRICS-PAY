@@ -1,0 +1,12 @@
+services:
+  anvil:
+    image: ghcr.io/foundry-rs/foundry
+    command: ["anvil", "--host", "0.0.0.0", "--chain-id", "31337"]
+    ports: ["8545:8545"]
+
+  api:
+    build: ./packages/api
+    environment:
+      RPC_URL: http://anvil:8545
+    ports: ["8000:8000"]
+    depends_on: [anvil]
