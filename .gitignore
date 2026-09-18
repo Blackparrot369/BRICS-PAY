@@ -1,66 +1,14 @@
 ```
 # Dependencies
-node_modules/
-venv/
-.venv/
-__pycache__/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
 *.egg-info/
+.eggs/
 .Python
-
-# Python
-*.pyc
-*.pyo
-*.pyd
-__pycache__/
-.pytest_cache/
-.mypy_cache/
-.coverage
-htmlcov/
-
-# Build artifacts
-build/
-dist/
-*.so
-*.dylib
-*.dll
-*.exe
-*.out
-
-# Environment
+venv/
 .env
 .env.local
 .env.*
-.envrc
-
-# Editors
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# Logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Docker
-.dockerenv
-!Dockerfile
-!docker-compose.yml
-
-# Foundry/Rust
-forge-std/
-openzeppelin-contracts/
-foundry.toml
-remappings.txt
-foundry.lock
-
-# Coverage
-coverage/
 ```
