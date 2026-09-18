@@ -1,14 +1,44 @@
 ```
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyc.*
+*.pyo.*
+
+# Solidity build artifacts
+packages/contracts/out/
+packages/contracts/cache/
+
 # Dependencies
-**/__pycache__/
-**/*.pyc
-**/*.pyo
-**/*.pyd
-*.egg-info/
-.eggs/
-.Python
+node_modules/
+.venv/
 venv/
 .env
 .env.local
 .env.*
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+*.swo
+
+# Coverage reports
+coverage/
+htmlcov/
+.coverage
+
+# IDE files
+.vscode/
+.idea/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.mypy_cache/
 ```

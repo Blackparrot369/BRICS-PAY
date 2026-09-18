@@ -18,11 +18,11 @@ contract Deploy is Script {
         vm.startBroadcast(deployerKey);
         SettlementHub hub = new SettlementHub();
 
-        MockCurrency brl = new MockCurrency("Brazilian Real", "BRL", msg.sender);
-        MockCurrency rub = new MockCurrency("Russian Ruble", "RUB", msg.sender);
-        MockCurrency inr = new MockCurrency("Indian Rupee", "INR", msg.sender);
-        MockCurrency cny = new MockCurrency("Chinese Yuan", "CNY", msg.sender);
-        MockCurrency zar = new MockCurrency("South African Rand", "ZAR", msg.sender);
+        MockCurrency brl = new MockCurrency("Brazilian Real", "BRL");
+        MockCurrency rub = new MockCurrency("Russian Ruble", "RUB");
+        MockCurrency inr = new MockCurrency("Indian Rupee", "INR");
+        MockCurrency cny = new MockCurrency("Chinese Yuan", "CNY");
+        MockCurrency zar = new MockCurrency("South African Rand", "ZAR");
         vm.stopBroadcast();
 
         // persist addresses so the API service can load them
