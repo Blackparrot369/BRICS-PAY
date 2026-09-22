@@ -347,9 +347,13 @@ def test_prepare_non_netted_transaction_fails(sample_funded_accounts):
     assert response.status_code == 400
     assert "netted" in response.json()["detail"].lower()
 
-def test_confirm_settlement(sample_funded_accounts):
-    """Test confirming on-chain settlement"""
-    # Create and net a transaction
+def test_confirm_settlement(sample_funded_accounts, monkeypatch):
+    """SECURITY CONTRACT (post-hardening):
+      - unproven hash  -> 400, balances untouched
+      - verified proof -> 200, balances move
+    Pre-hardening, this test asserted ANY hash settles — the vulnerability itself."""
+    import app.main as main_module
+
     txn = {
         "id": "txn_confirm_001",
         "postings": [
@@ -360,22 +364,36 @@ def test_confirm_settlement(sample_funded_accounts):
     client.post("/transactions", json=txn)
     net_response = client.post("/netting/compute", json=["txn_confirm_001"])
     netted_txn_id = net_response.json()["netted_transactions"][0]["id"]
-    
-    # Confirm settlement
-    blockchain_hash = "0xabc123def456..."
-    response = client.post(f"/settlement/confirm/{netted_txn_id}?blockchain_tx_hash={blockchain_hash}")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "settled"
-    assert data["blockchain_tx_hash"] == blockchain_hash
-    
-    # Verify transaction status updated
-    txn_response = client.get(f"/transactions/{netted_txn_id}")
-    assert txn_response.json()["status"] == "settled"
 
-# ============================================================================
-# Health & Stats Tests
-# ============================================================================
+    # simulate that /settlement/execute already ran on-chain
+    main_module.settlement_meta_db[netted_txn_id] = {
+        "root": "ab" * 32, "legs": [], "currency": "BRL",
+    }
+
+    balance_before = client.get("/accounts/acc_russia_001").json()["balance"]
+
+    # NEGATIVE: fake hash -> rejected, not one unit moves
+    fake = client.post(
+        f"/settlement/confirm/{netted_txn_id}",
+        params={"blockchain_tx_hash": "0x" + "00" * 32},
+    )
+    assert fake.status_code == 400
+    assert client.get("/accounts/acc_russia_001").json()["balance"] == balance_before
+
+    # POSITIVE: verified settlement proof -> settles
+    class FakeChain:
+        def verify_settlement_tx(self, tx_hash, currency, root, legs):
+            return None
+
+    monkeypatch.setattr(main_module, "get_chain", lambda: FakeChain())
+    ok = client.post(
+        f"/settlement/confirm/{netted_txn_id}",
+        params={"blockchain_tx_hash": "0x" + "11" * 32},
+    )
+    assert ok.status_code == 200
+    assert ok.json()["status"] == "settled"
+    assert client.get("/accounts/acc_russia_001").json()["balance"] == balance_before + 100
+
 
 def test_health_check():
     """Test health endpoint"""
@@ -401,8 +419,8 @@ def test_stats_endpoint(sample_funded_accounts, sample_transaction):
 # ============================================================================
 
 def test_full_payment_flow():
-    """Test complete payment flow: accounts -> transactions -> netting -> settlement"""
-    # 1. Create accounts
+    """Full flow: accounts -> transactions -> netting -> prepare.
+    Confirm is proof-gated: a fake hash must NOT settle and balances must not move."""
     accounts = [
         {"id": "acc_a", "owner": "Bank A", "currency": "XBR", "balance": 10000},
         {"id": "acc_b", "owner": "Bank B", "currency": "XBR", "balance": 10000},
@@ -410,54 +428,39 @@ def test_full_payment_flow():
     ]
     for acc in accounts:
         client.post("/accounts", json=acc)
-    
-    # 2. Create circular transactions
+
     txns = [
-        {
-            "id": "flow_1",
-            "postings": [
-                {"id": "f1p1", "account_id": "acc_a", "amount": -500, "currency": "XBR", "transaction_id": "flow_1"},
-                {"id": "f1p2", "account_id": "acc_b", "amount": 500, "currency": "XBR", "transaction_id": "flow_1"},
-            ]
-        },
-        {
-            "id": "flow_2",
-            "postings": [
-                {"id": "f2p1", "account_id": "acc_b", "amount": -500, "currency": "XBR", "transaction_id": "flow_2"},
-                {"id": "f2p2", "account_id": "acc_c", "amount": 500, "currency": "XBR", "transaction_id": "flow_2"},
-            ]
-        },
-        {
-            "id": "flow_3",
-            "postings": [
-                {"id": "f3p1", "account_id": "acc_c", "amount": -500, "currency": "XBR", "transaction_id": "flow_3"},
-                {"id": "f3p2", "account_id": "acc_a", "amount": 500, "currency": "XBR", "transaction_id": "flow_3"},
-            ]
-        }
+        {"id": "flow_1", "postings": [
+            {"id": "f1p1", "account_id": "acc_a", "amount": -500, "currency": "XBR", "transaction_id": "flow_1"},
+            {"id": "f1p2", "account_id": "acc_b", "amount": 500, "currency": "XBR", "transaction_id": "flow_1"}]},
+        {"id": "flow_2", "postings": [
+            {"id": "f2p1", "account_id": "acc_b", "amount": -500, "currency": "XBR", "transaction_id": "flow_2"},
+            {"id": "f2p2", "account_id": "acc_c", "amount": 500, "currency": "XBR", "transaction_id": "flow_2"}]},
+        {"id": "flow_3", "postings": [
+            {"id": "f3p1", "account_id": "acc_c", "amount": -500, "currency": "XBR", "transaction_id": "flow_3"},
+            {"id": "f3p2", "account_id": "acc_a", "amount": 500, "currency": "XBR", "transaction_id": "flow_3"}]},
     ]
-    
     for txn in txns:
         resp = client.post("/transactions", json=txn)
         assert resp.status_code == 201
-    
-    # 3. Compute netting (should cancel out completely)
+
     net_response = client.post("/netting/compute", json=["flow_1", "flow_2", "flow_3"])
     assert net_response.status_code == 200
-    cycle = net_response.json()
-    
-    # 4. Prepare for settlement
-    netted_txn_id = cycle["netted_transactions"][0]["id"]
+    netted_txn_id = net_response.json()["netted_transactions"][0]["id"]
+
     prep_response = client.post(f"/settlement/prepare/{netted_txn_id}")
     assert prep_response.status_code == 200
-    
-    # 5. Confirm settlement
+
+    balances_before = {a: client.get(f"/accounts/{a}").json()["balance"]
+                       for a in ("acc_a", "acc_b", "acc_c")}
+
     settle_response = client.post(
         f"/settlement/confirm/{netted_txn_id}",
-        params={"blockchain_tx_hash": "0xsettlement123"}
+        params={"blockchain_tx_hash": "0x" + "77" * 32},
     )
-    assert settle_response.status_code == 200
-    
-    # 6. Verify final state
-    stats = client.get("/stats").json()
-    assert stats["total_transactions"] >= 4  # 3 original + 1 netted
-    assert stats["netting_cycles_processed"] >= 1
+    assert settle_response.status_code == 400  # unproven hash refused
+
+    for a in ("acc_a", "acc_b", "acc_c"):
+        assert client.get(f"/accounts/{a}").json()["balance"] == balances_before[a],             f"{a} moved without on-chain proof!"
+
+

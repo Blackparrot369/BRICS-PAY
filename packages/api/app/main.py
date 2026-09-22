@@ -305,31 +305,6 @@ async def prepare_for_settlement(transaction_id: str):
         "contract_address": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb"  # Placeholder
     }
 
-@app.post("/settlement/confirm/{transaction_id}")
-async def confirm_settlement(transaction_id: str, blockchain_tx_hash: str):
-    """
-    Confirm that settlement has been executed on-chain.
-    Updates transaction status to SETTLED.
-    """
-    if transaction_id not in transactions_db:
-        raise HTTPException(status_code=404, detail="Transaction not found")
-    
-    txn = transactions_db[transaction_id]
-    txn.status = TransactionStatus.SETTLED
-    txn.settled_at = datetime.utcnow()
-    
-    # Update account balances
-    for posting in txn.postings:
-        account = accounts_db.get(posting.account_id)
-        if account:
-            account.balance += posting.amount
-    
-    return {
-        "status": "settled",
-        "transaction_id": transaction_id,
-        "blockchain_tx_hash": blockchain_tx_hash,
-        "settled_at": txn.settled_at
-    }
 
 # ============================================================================
 # Health & Status
@@ -363,3 +338,173 @@ async def get_stats():
         "netting_cycles_processed": len(netting_cycles_db),
         "volume_saved_through_netting": total_saved
     }
+
+
+# ============================================================================
+# ON-CHAIN SETTLEMENT BRIDGE (hybrid phase 2)
+# ============================================================================
+import hashlib, json, os as _os
+from pathlib import Path as _Path
+from web3 import Web3 as _W3
+from .chain import ChainClient
+
+MEMBERS = json.loads(_Path(_os.environ.get("MEMBERS_PATH", "members.json")).read_text())
+settlement_meta_db: dict = {}
+
+def get_chain() -> ChainClient:
+    global _chain
+    try:
+        return _chain
+    except NameError:
+        _chain = ChainClient(
+            rpc_url=_os.environ.get("RPC_URL", "http://127.0.0.1:8545"),
+            operator_key=_os.environ["OPERATOR_PRIVATE_KEY"],
+            deployments_path=_os.environ.get("DEPLOYMENTS_PATH", "../contracts/deployments/local.json"),
+            hub_abi_path=_os.environ.get("HUB_ABI_PATH", "../contracts/deployments/SettlementHub.abi.json"),
+        )
+        return _chain
+
+def _merkle_root_for(txn) -> str:
+    return hashlib.sha256(
+        json.dumps([p.model_dump() for p in txn.postings], sort_keys=True, default=str).encode()
+    ).hexdigest()
+
+def _credit_legs(txn) -> list:
+    legs = []
+    for p in txn.postings:
+        if p.amount <= 0:
+            continue
+        acct = accounts_db.get(p.account_id)
+        if acct is None:
+            raise HTTPException(422, f"unknown account {p.account_id}")
+        addr = MEMBERS.get(acct.owner)
+        if addr is None:
+            raise HTTPException(422, f"no chain address for member '{acct.owner}'")
+        legs.append((_W3.to_checksum_address(addr), int(p.amount)))
+    return legs
+
+@app.post("/settlement/execute/{transaction_id}")
+async def execute_settlement(transaction_id: str):
+    """On-chain phases 1+2: submitBatch(commit) then executeSettlement(operator pays credits)."""
+    if transaction_id not in transactions_db:
+        raise HTTPException(404, "Transaction not found")
+    txn = transactions_db[transaction_id]
+    if txn.status != TransactionStatus.NETTED:
+        raise HTTPException(400, "only netted transactions can be executed")
+    legs = _credit_legs(txn)
+    if not legs:
+        raise HTTPException(400, "no credit legs to settle")
+    root = _merkle_root_for(txn)
+    currency = txn.postings[0].currency.value
+    result = get_chain().submit_and_execute(root, currency, legs)
+    settlement_meta_db[transaction_id] = {"root": root, "legs": legs, "currency": currency}
+    return {"transaction_id": transaction_id, "currency": currency, "merkle_root": root, **result}
+
+@app.post("/settlement/confirm/{transaction_id}")
+async def confirm_settlement(transaction_id: str, blockchain_tx_hash: str):
+    """HARDENED: verifies the tx on-chain BEFORE any balance moves."""
+    if transaction_id not in transactions_db:
+        raise HTTPException(404, "Transaction not found")
+    txn = transactions_db[transaction_id]
+    if txn.status == TransactionStatus.SETTLED:
+        raise HTTPException(409, "already settled")
+    meta = settlement_meta_db.get(transaction_id)
+    if meta is None:
+        raise HTTPException(400, "execute on-chain first")
+    try:
+        get_chain().verify_settlement_tx(blockchain_tx_hash, meta["currency"], meta["root"], meta["legs"])
+    except Exception as e:
+        raise HTTPException(400, f"on-chain verification failed: {e}")
+    txn.status = TransactionStatus.SETTLED
+    txn.settled_at = datetime.utcnow()
+    for posting in txn.postings:
+        account = accounts_db.get(posting.account_id)
+        if account:
+            account.balance += posting.amount
+    return {"status": "settled", "transaction_id": transaction_id,
+            "blockchain_tx_hash": blockchain_tx_hash, "settled_at": str(txn.settled_at)}
+
+
+# ============================================================================
+# ON-CHAIN SETTLEMENT BRIDGE (hybrid phase 2)
+# ============================================================================
+import hashlib, json, os as _os
+from pathlib import Path as _Path
+from web3 import Web3 as _W3
+from .chain import ChainClient
+
+MEMBERS = json.loads(_Path(_os.environ.get("MEMBERS_PATH", "members.json")).read_text())
+settlement_meta_db: dict = {}
+
+def get_chain() -> ChainClient:
+    global _chain
+    try:
+        return _chain
+    except NameError:
+        _chain = ChainClient(
+            rpc_url=_os.environ.get("RPC_URL", "http://127.0.0.1:8545"),
+            operator_key=_os.environ["OPERATOR_PRIVATE_KEY"],
+            deployments_path=_os.environ.get("DEPLOYMENTS_PATH", "../contracts/deployments/local.json"),
+            hub_abi_path=_os.environ.get("HUB_ABI_PATH", "../contracts/deployments/SettlementHub.abi.json"),
+        )
+        return _chain
+
+def _merkle_root_for(txn) -> str:
+    return hashlib.sha256(
+        json.dumps([p.model_dump() for p in txn.postings], sort_keys=True, default=str).encode()
+    ).hexdigest()
+
+def _credit_legs(txn) -> list:
+    legs = []
+    for p in txn.postings:
+        if p.amount <= 0:
+            continue
+        acct = accounts_db.get(p.account_id)
+        if acct is None:
+            raise HTTPException(422, f"unknown account {p.account_id}")
+        addr = MEMBERS.get(acct.owner)
+        if addr is None:
+            raise HTTPException(422, f"no chain address for member '{acct.owner}'")
+        legs.append((_W3.to_checksum_address(addr), int(p.amount)))
+    return legs
+
+@app.post("/settlement/execute/{transaction_id}")
+async def execute_settlement(transaction_id: str):
+    """On-chain phases 1+2: submitBatch(commit) then executeSettlement(operator pays credits)."""
+    if transaction_id not in transactions_db:
+        raise HTTPException(404, "Transaction not found")
+    txn = transactions_db[transaction_id]
+    if txn.status != TransactionStatus.NETTED:
+        raise HTTPException(400, "only netted transactions can be executed")
+    legs = _credit_legs(txn)
+    if not legs:
+        raise HTTPException(400, "no credit legs to settle")
+    root = _merkle_root_for(txn)
+    currency = txn.postings[0].currency.value
+    result = get_chain().submit_and_execute(root, currency, legs)
+    settlement_meta_db[transaction_id] = {"root": root, "legs": legs, "currency": currency}
+    return {"transaction_id": transaction_id, "currency": currency, "merkle_root": root, **result}
+
+@app.post("/settlement/confirm/{transaction_id}")
+async def confirm_settlement(transaction_id: str, blockchain_tx_hash: str):
+    """HARDENED: verifies the tx on-chain BEFORE any balance moves."""
+    if transaction_id not in transactions_db:
+        raise HTTPException(404, "Transaction not found")
+    txn = transactions_db[transaction_id]
+    if txn.status == TransactionStatus.SETTLED:
+        raise HTTPException(409, "already settled")
+    meta = settlement_meta_db.get(transaction_id)
+    if meta is None:
+        raise HTTPException(400, "execute on-chain first")
+    try:
+        get_chain().verify_settlement_tx(blockchain_tx_hash, meta["currency"], meta["root"], meta["legs"])
+    except Exception as e:
+        raise HTTPException(400, f"on-chain verification failed: {e}")
+    txn.status = TransactionStatus.SETTLED
+    txn.settled_at = datetime.utcnow()
+    for posting in txn.postings:
+        account = accounts_db.get(posting.account_id)
+        if account:
+            account.balance += posting.amount
+    return {"status": "settled", "transaction_id": transaction_id,
+            "blockchain_tx_hash": blockchain_tx_hash, "settled_at": str(txn.settled_at)}
