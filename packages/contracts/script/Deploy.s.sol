@@ -36,7 +36,5 @@ contract Deploy is Script {
         json = vm.serializeAddress(json, "ZAR", address(zar));
         vm.writeJson(json, "deployments/local.json");
 
-        console.log("SettlementHub:", address(hub));
-        console.log("deployments/local.json written with all 6 entries");
     }
 }

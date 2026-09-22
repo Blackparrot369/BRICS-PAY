@@ -17,8 +17,8 @@ contract SettlementHubTest is Test {
 
     function setUp() public {
         hub = new SettlementHub();
-        brl = new MockCurrency("Brazilian Real", "BRL");
-        rub = new MockCurrency("Russian Ruble", "RUB");
+        brl = new MockCurrency("Brazilian Real", "BRL", address(this));
+        rub = new MockCurrency("Russian Ruble", "RUB", address(this));
         
         // Authorize operator for currencies - owner is msg.sender (test contract)
         hub.authorizeCurrency(address(brl), operator);
