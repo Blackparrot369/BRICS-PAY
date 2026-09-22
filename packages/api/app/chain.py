@@ -76,3 +76,14 @@ class ChainClient:
         for addr, amt in legs:
             if (addr, amt) not in proven:
                 raise ValueError(f"credit leg not proven on-chain: {addr} for {amt}")
+
+    _ERC20_ABI = [
+        {"name": "balanceOf", "type": "function", "stateMutability": "view",
+         "inputs": [{"name": "account", "type": "address"}],
+         "outputs": [{"name": "", "type": "uint256"}]},
+    ]
+
+    def onchain_balance(self, member: str, currency: str) -> int:
+        """ERC20 balance of `member` in `currency` — the reconciliation read."""
+        token = self.w3.eth.contract(address=self.tokens[currency], abi=self._ERC20_ABI)
+        return token.functions.balanceOf(Web3.to_checksum_address(member)).call()

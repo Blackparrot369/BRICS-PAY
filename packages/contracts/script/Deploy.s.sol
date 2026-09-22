@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Script, console} from "forge-std/Script.sol";
+import {Script} from "forge-std/Script.sol";
 import {SettlementHub} from "../src/SettlementHub.sol";
 import {MockCurrency} from "../src/MockCurrency.sol";
 
-/// @dev Defaults to Anvil account #0 — local testing only.
-///      Real deployment: operator becomes a Safe multisig, and each currency's
-///      owner is that jurisdiction's central bank, not the deployer.
+/// @dev Deploys hub + 5 mock currencies, writes deployments/local.json
+///      in a SINGLE write (serialize-accumulate then one writeJson).
+///      Fixes the clobbering bug where each writeJson replaced the file,
+///      leaving only the last key behind.
 contract Deploy is Script {
     function run() external {
         uint256 deployerKey = vm.envOr(
@@ -17,15 +18,15 @@ contract Deploy is Script {
 
         vm.startBroadcast(deployerKey);
         SettlementHub hub = new SettlementHub();
-
-        MockCurrency brl = new MockCurrency("Brazilian Real", "BRL");
-        MockCurrency rub = new MockCurrency("Russian Ruble", "RUB");
-        MockCurrency inr = new MockCurrency("Indian Rupee", "INR");
-        MockCurrency cny = new MockCurrency("Chinese Yuan", "CNY");
-        MockCurrency zar = new MockCurrency("South African Rand", "ZAR");
+        MockCurrency brl = new MockCurrency("Brazilian Real", "BRL", msg.sender);
+        MockCurrency rub = new MockCurrency("Russian Ruble", "RUB", msg.sender);
+        MockCurrency inr = new MockCurrency("Indian Rupee", "INR", msg.sender);
+        MockCurrency cny = new MockCurrency("Chinese Yuan", "CNY", msg.sender);
+        MockCurrency zar = new MockCurrency("South African Rand", "ZAR", msg.sender);
         vm.stopBroadcast();
 
-        // persist addresses so the API service can load them
+        // each serializeAddress returns the JSON accumulated SO FAR —
+        // reassign it, then write the complete object once
         string memory json = "deployments";
         json = vm.serializeAddress(json, "SettlementHub", address(hub));
         json = vm.serializeAddress(json, "BRL", address(brl));
@@ -36,5 +37,6 @@ contract Deploy is Script {
         vm.writeJson(json, "deployments/local.json");
 
         console.log("SettlementHub:", address(hub));
+        console.log("deployments/local.json written with all 6 entries");
     }
 }
